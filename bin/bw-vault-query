@@ -1,0 +1,46 @@
+#!/bin/bash
+
+# Run Bitwarden queries in a short-lived helper and emit only the fields the
+# QML UI needs. Full `bw` item JSON never enters the long-lived shell process.
+
+set -euo pipefail
+
+fail() {
+  echo "bw-vault-query: $*" >&2
+  exit 1
+}
+
+command -v bw >/dev/null 2>&1 || fail "bw not found"
+command -v jq >/dev/null 2>&1 || fail "jq not found"
+
+case "${1:-}" in
+list)
+  [[ $# -eq 1 ]] || fail "usage: bw-vault-query list"
+  bw list items | jq -c '
+    map({
+      id: (.id // ""),
+      name: (.name // ""),
+      type: (.type // 0),
+      username: (.login.username // ""),
+      uris: ((.login.uris // []) | map({uri: (.uri // "")}))
+    })
+  '
+  ;;
+get)
+  [[ $# -eq 2 && -n $2 ]] || fail "usage: bw-vault-query get <item-id>"
+  bw get item "$2" | jq -c '
+    {
+      id: (.id // ""),
+      name: (.name // ""),
+      type: (.type // 0),
+      username: (.login.username // ""),
+      password: (.login.password // ""),
+      notes: (.notes // ""),
+      uris: ((.login.uris // []) | map({uri: (.uri // "")}))
+    }
+  '
+  ;;
+*)
+  fail "usage: bw-vault-query <list | get ITEM_ID>"
+  ;;
+esac

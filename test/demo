@@ -53,4 +53,7 @@ echo "Fixture vault: $(jq length "$here/demo-vault.json") items"
 echo "Master password: anything non-empty"
 echo
 # Not exec: the EXIT trap has to survive to clean the temp dirs up.
-PATH="$here/fixtures:$PATH" BW_FIXTURE_STATE="$state" qs -p "$work"
+PATH="$here/fixtures:$PATH" \
+  BW_FIXTURE_STATE="$state" \
+  BW_VAULT_PLUGIN_DIR="$plugin" \
+  qs -p "$work"

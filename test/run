@@ -1,0 +1,58 @@
+#!/bin/bash
+
+set -euo pipefail
+
+here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+root=$(dirname "$here")
+state=$(mktemp -d -t bw-vault-tests-XXXXXX)
+trap 'rm -rf "$state"' EXIT
+
+export PATH="$here/fixtures:$PATH"
+export BW_FIXTURE_STATE="$state"
+mkdir -p "$state/keyring"
+touch "$state/authed" "$state/unlocked"
+
+list_json=$("$root/bin/bw-vault-query" list)
+jq -e '
+  length == 8
+  and all(.[];
+    ((keys | sort) == (["id", "name", "type", "uris", "username"] | sort))
+  )
+' <<<"$list_json" >/dev/null
+
+if grep -Eq 'demo-not-a-real-password|aaaa-bbbb|Second account, org SSO|totp-must-not-survive|hidden-field-must-not-survive' <<<"$list_json"; then
+  echo "sanitized list leaked a password or note" >&2
+  exit 1
+fi
+
+detail_json=$("$root/bin/bw-vault-query" get 11111111-0001-4000-8000-000000000002)
+jq -e '
+  ((keys | sort) == (["id", "name", "notes", "password", "type", "uris", "username"] | sort))
+  and .password == "demo-not-a-real-password-2"
+  and .username == "ada-demo"
+' <<<"$detail_json" >/dev/null
+
+limited_detail=$("$root/bin/bw-vault-query" get 11111111-0001-4000-8000-000000000001)
+if grep -Eq 'totp-must-not-survive|hidden-field-must-not-survive' <<<"$limited_detail"; then
+  echo "sanitized detail leaked a TOTP or hidden custom field" >&2
+  exit 1
+fi
+
+node "$here/model.test.mjs"
+python3 "$here/security_contracts.py"
+
+shellcheck -x \
+  "$root/bin/bw-vault-query" \
+  "$root/bin/bw-vault-setup" \
+  "$here/demo" \
+  "$here/fixtures/bw" \
+  "$here/fixtures/secret-tool" \
+  "$here/run"
+
+jq -e . "$root/manifest.json" "$here/demo-vault.json" >/dev/null
+
+if command -v omarchy >/dev/null 2>&1; then
+  omarchy plugin validate "$root"
+fi
+
+echo "All tests passed"

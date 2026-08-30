@@ -26,7 +26,7 @@ What that caching does and does not cover is spelled out in [Security notes](#se
 - **API key authentication** — authenticates with your [personal API key](https://bitwarden.com/help/personal-api-key/) (`bw login --apikey`), which needs no interactive 2FA and skips new-device verification. Stored once per machine by `bw-vault-setup`; see [Setup](#setup).
 - **Session persistence** — the session key is mirrored to the OS keyring (Secret Service via `secret-tool`), so the master password is asked for once per machine and survives a shell restart.
 - **Idle cache expiry** — the cached list is forgotten after `cacheTtlMinutes` of no vault activity (15 by default). The session is untouched, so recovering costs one `bw list` and no master password.
-- **Clipboard auto-wipe** — a copied value is wiped about 20 seconds later, but only if the clipboard still holds it.
+- **Clipboard protection** — credential copies use Wayland's sensitive-data hint and are wiped about 20 seconds later, but only if the clipboard still holds the value this plugin copied.
 - **Native Omarchy theming** — built on `Panel`, `KeyboardPanel`, `TextField` and `Color.*` tokens, so it matches your theme.
 
 ### Scope
@@ -137,14 +137,16 @@ Item metadata is now cached between opens where 1.x dropped it on every close �
 
 - [Omarchy](https://omarchy.org/) 4 (Quattro)
 - [`bw`](https://bitwarden.com/help/bitwarden-cli/) — the Bitwarden CLI
+- [`jq`](https://jqlang.github.io/jq/) — reduces Bitwarden responses before they enter the shell process
 - `libsecret` (`secret-tool`) — OS keyring access
 - `wl-clipboard` (`wl-copy`, `wl-paste`) — clipboard
 
-All three are usually already present on Omarchy. If one is missing, add it with your usual package tooling — the plugin never installs anything itself, and never invokes a package manager.
+These are usually already present on Omarchy. If one is missing, add it with your usual package tooling — the plugin never installs anything itself, and never invokes a package manager.
 
 ## Troubleshooting
 
 - `bw: command not found` → install the [Bitwarden CLI](https://bitwarden.com/help/bitwarden-cli/).
+- `jq: command not found` → install `jq`.
 - `secret-tool: command not found` → install `libsecret`.
 - The padlock isn't in the bar → `omarchy plugin list`, and see the note under [Install](#install).
 - The dropdown says "Not set up" → run `bw-vault-setup`.
@@ -160,13 +162,16 @@ omarchy plugin remove com.aktivesolutions.bw-vault
 
 ## Security notes
 
-- The client_id and client_secret are stored in your OS keyring via `secret-tool`, never in a plaintext file, and are passed to `bw login --apikey` through the child process environment rather than argv. The master password only ever lives in a child's environment (`BW_VAULT_MASTER_PASSWORD`).
+- The client_id and client_secret are stored in your OS keyring via `secret-tool`, never in a plaintext file, and are passed to `bw login --apikey` through the child process environment rather than argv. The master password is held only while an asynchronous keyring lookup or authentication child needs it, then cleared on every success and failure path.
 - Credentials handed to `bw login` / `bw unlock` have that environment cleared when the child exits, on both the success and failure paths. Before 2.0 the master password stayed set on the Process until the next unlock overwrote it.
-- **Item metadata is cached between opens, and that is a real change from 1.x.** `parseList()` strips passwords out of `bw list` output before anything reaches a property, so what the service holds is names, usernames, ids and URIs — a map of your vault, not its contents. It lives in the always-loaded shell process until you lock, or until `cacheTtlMinutes` of idleness passes. If you would rather have the old behaviour at the cost of a four-second wait per open, set `cacheTtlMinutes` to 1; the session is unaffected either way.
-- Item passwords are fetched on demand (`bw get item <id>`). The password is handed to the widget through a signal and is never assigned to a property on the shared service. The widget holds it only while the detail screen is showing it, and drops it on the way back to the list.
+- **Item metadata is cached between opens, and that is a real change from 1.x.** A short-lived helper reduces `bw list` output to names, usernames, ids, types and URIs before it enters the long-lived QML process. Passwords, notes and other Bitwarden fields never enter the service's list buffer. The metadata lives until you lock or `cacheTtlMinutes` of idleness passes. If you would rather have the old behaviour at the cost of a four-second wait per open, set `cacheTtlMinutes` to 1; the session is unaffected either way.
+- Item passwords are fetched on demand through the same field-limiting helper. Reads are serialized, so a delayed response cannot be attributed to a newer selection. The password is separated from item metadata before the service emits it, and temporary process buffers and `BW_SESSION` environments are cleared after each request. The widget retains a password only while its detail screen is showing it.
 - The detail screen is the only place a secret is drawn, and it is masked until you press `p`. A bar dropdown sits in the open — that is worth remembering before revealing one in a meeting.
+- Vault-controlled strings are forced to plain-text rendering; item names, usernames, notes and URIs cannot inject QML rich-text markup.
 - A `bw list` started before a lock cannot repopulate the cache after it: in-flight children carry the generation they started in and drop their results if it has moved.
+- Password and username clipboard writes carry `wl-copy --sensitive`. The timed wipe compares a digest first, so it does not erase a newer clipboard value owned by another application.
 - The session key is stored in the OS keyring. If that fails, it is held in memory only and lost on shell restart.
+- QML and JavaScript strings are managed memory: clearing a property removes the application's reference but cannot promise byte-for-byte zeroization before garbage collection. The implementation minimizes fields and lifetimes rather than claiming secure erasure.
 - This plugin runs unsandboxed in your shell process, like all Omarchy plugins. It has access to your session and can run arbitrary commands. Review the source before trusting it.
 
 ## Development
@@ -182,6 +187,8 @@ Service.qml          # session, item metadata, every bw child. Mounted once by t
 BarWidget.qml        # bar icon + dropdown: unlock, search, copy, detail
 VaultModel.js        # bw CLI command building + JSON parsing (pure JS)
 bin/bw-vault-setup   # one-time API key storage, from a terminal
+bin/bw-vault-query   # short-lived field-limiting wrapper around bw list/get
+test/run             # deterministic unit, contract, fixture and lint checks
 test/demo            # run the dropdown against a fixture vault, in its own shell
 test/demo-vault.json # the fixture vault
 test/fixtures/       # stub `bw` and `secret-tool`
@@ -190,6 +197,7 @@ test/fixtures/       # stub `bw` and `secret-tool`
 ### Running it without a real vault
 
 ```sh
+test/run
 test/demo              # starts locked, on the first-run screen
 test/demo --unlocked   # starts with the fixture vault open
 ```

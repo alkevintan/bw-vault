@@ -16,6 +16,10 @@ ShellRoot {
 
   Service {
     id: vaultService
+    manifest: ({
+      id: "com.aktivesolutions.bw-vault",
+      __sourceDir: String(Quickshell.env("BW_VAULT_PLUGIN_DIR") || "")
+    })
   }
 
   // The `shell` side of what a bar widget expects.

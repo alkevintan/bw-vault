@@ -1,7 +1,10 @@
 [
   { "id": "11111111-0001-4000-8000-000000000001", "name": "Example Bank", "type": 1,
     "login": { "username": "ada@example.com", "password": "demo-not-a-real-password-1",
-               "uris": [{ "uri": "https://bank.example.com" }] }, "notes": "" },
+               "totp": "totp-must-not-survive",
+               "uris": [{ "uri": "https://bank.example.com" }] },
+    "fields": [{ "name": "PIN", "value": "hidden-field-must-not-survive", "type": 1 }],
+    "notes": "" },
   { "id": "11111111-0001-4000-8000-000000000002", "name": "github.com", "type": 1,
     "login": { "username": "ada-demo", "password": "demo-not-a-real-password-2",
                "uris": [{ "uri": "https://github.com" }] }, "notes": "" },

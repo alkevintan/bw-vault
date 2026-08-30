@@ -31,7 +31,8 @@ unlock)
   touch "$state/authed" "$state/unlocked"
   printf 'demo-session-token-not-real\n' ;;
 lock)
-  rm -f "$state/unlocked"; echo "Your vault is locked." ;;
+  # Keep lock slower than status so tests can expose stale-unlocked races.
+  sleep "$delay"; sleep "$delay"; rm -f "$state/unlocked"; echo "Your vault is locked." ;;
 list)
   sleep "$delay"
   [[ -f $state/unlocked ]] || { echo "Vault is locked." >&2; exit 1; }

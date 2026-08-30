@@ -16,9 +16,8 @@ import "VaultModel.js" as VaultModel
 //
 // What that buys is bounded on purpose:
 //
-//   * Only metadata is cached. VaultModel.parseList() strips passwords out of
-//     `bw list` output before it ever reaches a property, so what lives here is
-//     names, usernames, ids, URIs — never a secret.
+//   * Only metadata is cached. A short-lived helper reduces `bw list` output to
+//     names, usernames, ids, types and URIs before it enters this process.
 //   * A password fetched by fetchItem() travels out through the itemFetched
 //     signal and is never assigned to a property on this object. The requester
 //     drops it when it is done.
@@ -36,6 +35,8 @@ Item {
   property string omarchyPath: ""
 
   readonly property string pluginId: (manifest && manifest.id) || "com.aktivesolutions.bw-vault"
+  readonly property string pluginPath: (manifest && manifest.__sourceDir) ? String(manifest.__sourceDir) : ""
+  readonly property string helperPath: service.pluginPath ? service.pluginPath + "/bin/bw-vault-query" : ""
 
   // Pushed in by the bar widget: the shell injects settings into widgets but
   // never into services, so the widget is the only place that sees them.
@@ -56,6 +57,7 @@ Item {
 
   readonly property bool hasSession: service.heldSession !== ""
   readonly property bool unlocked: service.status === "unlocked"
+  readonly property bool fetching: getProc.running
 
   // Session token. Held here so reads can skip the master password; mirrored to
   // the OS keyring so it also survives a shell restart.
@@ -77,8 +79,9 @@ Item {
   signal unlockSucceeded()
   signal itemsRefreshed()
   signal lockedOut(string reason)
-  signal itemFetched(string token, var item)
+  signal itemFetched(string token, var item, string password)
   signal itemFetchFailed(string token, string message)
+  signal authFailed()
 
   // -- lifecycle -------------------------------------------------------------
 
@@ -95,8 +98,13 @@ Item {
   }
 
   Component.onCompleted: {
-    apiKeyIdProbe.running = true
-    service.refresh()
+    // The host injects the manifest immediately after createObject(). Defer the
+    // first query one event-loop turn so helperPath is available before any
+    // Bitwarden command can run.
+    Qt.callLater(function() {
+      apiKeyIdProbe.running = true
+      service.refresh()
+    })
   }
 
   // Bring the session up to date. Cheap when the cache is warm: a warm cache
@@ -109,6 +117,8 @@ Item {
     service.error = ""
     service.status = "checking"
     service.busy = true
+    sessionLookup.output = ""
+    sessionLookup.generation = service.generation
     sessionLookup.running = true
   }
 
@@ -146,6 +156,7 @@ Item {
   function fetchGlobalStatus() {
     service.status = "checking"
     service.busy = true
+    statusProc.generation = service.generation
     statusProc.command = VaultModel.statusCommand()
     statusProc.running = true
   }
@@ -186,13 +197,17 @@ Item {
       // Held only until the login child exits, so the unlock that follows a
       // successful login does not need the password passed in a second time.
       unlockProc.environment = VaultModel.passwordEnvironment(masterPassword)
+      unlockProc.output = ""
+      loginProc.generation = service.generation
       loginProc.running = true
       return
     }
 
     service.authPhase = "unlock"
     unlockProc.environment = VaultModel.passwordEnvironment(masterPassword)
+    unlockProc.output = ""
     unlockProc.command = VaultModel.unlockCommand()
+    unlockProc.generation = service.generation
     unlockProc.running = true
   }
 
@@ -200,7 +215,7 @@ Item {
   // has to ask for the master password. On a machine with no key stored this
   // is refused rather than half-attempted: `bw-vault-setup` is the way in.
   function unlockWithStored(masterPassword) {
-    if (service.busy && service.authPhase !== "") return
+    if (service.busy) return
     if (service.status !== "unauthenticated") {
       service.unlock("", "", masterPassword)
       return
@@ -212,6 +227,7 @@ Item {
     service.error = ""
     service.busy = true
     service.pendingMaster = masterPassword
+    apiKeyIdLookup.generation = service.generation
     apiKeyIdLookup.running = true
   }
 
@@ -221,27 +237,17 @@ Item {
     if (!clientId || !clientSecret) {
       service.error = "Could not read the stored API key"
       service.busy = false
+      service.authFailed()
       return
     }
     service.unlock(clientId, clientSecret, master)
   }
 
-  // Called by the panel's fallback form and by `bw-vault-setup`'s in-shell
-  // counterpart. Non-fatal: a key that cannot be persisted still unlocks this
-  // session, it just has to be entered again next time.
-  function storeApiKey(clientId, clientSecret) {
-    apiKeyIdStore.payload = String(clientId || "")
-    apiKeyIdStore.stdinEnabled = true
-    apiKeyIdStore.running = true
-    apiKeySecretStore.payload = String(clientSecret || "")
-    apiKeySecretStore.stdinEnabled = true
-    apiKeySecretStore.running = true
-    service.apiKeyStored = true
-  }
-
   function runUnlock() {
     service.authPhase = "unlock"
+    unlockProc.output = ""
     unlockProc.command = VaultModel.unlockCommand()
+    unlockProc.generation = service.generation
     unlockProc.running = true
   }
 
@@ -252,6 +258,21 @@ Item {
   function clearAuthEnvironment() {
     loginProc.environment = ({})
     unlockProc.environment = VaultModel.nonInteractiveEnvironment()
+    service.pendingMaster = ""
+  }
+
+  function clearSessionEnvironments() {
+    listProc.environment = VaultModel.nonInteractiveEnvironment()
+    getProc.environment = VaultModel.nonInteractiveEnvironment()
+    if (!lockProc.running) lockProc.environment = VaultModel.nonInteractiveEnvironment()
+  }
+
+  function failAuthentication(message) {
+    service.error = String(message || "Authentication failed")
+    service.busy = false
+    service.authPhase = ""
+    service.clearAuthEnvironment()
+    service.authFailed()
   }
 
   function onUnlockSuccess(rawSession) {
@@ -259,8 +280,7 @@ Item {
     service.authPhase = ""
     service.clearAuthEnvironment()
     if (!session) {
-      service.error = "Unlock did not return a session"
-      service.busy = false
+      service.failAuthentication("Unlock did not return a session")
       return
     }
     service.heldSession = session
@@ -270,6 +290,7 @@ Item {
     // write an empty session if a lock landed in between. stdin is re-opened so
     // the previous run's EOF has not left the write channel closed.
     sessionStore.payload = session
+    sessionStore.clearAfterExit = false
     sessionStore.stdinEnabled = true
     sessionStore.running = true
     service.unlockSucceeded()
@@ -281,11 +302,16 @@ Item {
   // speculative: the session came straight from the keyring and is unverified,
   // so a failure means "that session is dead", not "show the user an error".
   function loadItems(speculative) {
+    if (!service.helperPath) {
+      service.error = "BW Vault helper path is unavailable"
+      service.busy = false
+      return
+    }
     listProc.speculative = speculative === true
     listProc.generation = service.generation
     service.busy = true
     service.error = ""
-    listProc.command = VaultModel.listCommand()
+    listProc.command = VaultModel.listCommand(service.helperPath)
     listProc.environment = VaultModel.sessionEnvironment(service.heldSession)
     listProc.running = true
   }
@@ -307,24 +333,54 @@ Item {
   // assigned to a property here. `token` lets a view ignore a fetch some other
   // view asked for.
   function fetchItem(id, token) {
+    if (getProc.running) {
+      service.itemFetchFailed(String(token || ""), "Another item is still loading")
+      return false
+    }
+    if (!service.helperPath) {
+      service.itemFetchFailed(String(token || ""), "BW Vault helper path is unavailable")
+      return false
+    }
     getProc.token = String(token || "")
     getProc.generation = service.generation
-    getProc.command = VaultModel.getCommand(id)
+    getProc.output = ""
+    getProc.command = VaultModel.getCommand(service.helperPath, id)
     getProc.environment = VaultModel.sessionEnvironment(service.heldSession)
     getProc.running = true
+    return true
   }
 
   // -- lock ------------------------------------------------------------------
 
   function lock() {
-    if (service.heldSession) {
+    var startCliLock = !lockProc.running && (service.unlocked || service.heldSession !== "")
+    var waitForCliLock = lockProc.running || startCliLock
+    service.generation++
+    if (apiKeyIdLookup.running) apiKeyIdLookup.running = false
+    if (apiKeySecretLookup.running) apiKeySecretLookup.running = false
+    if (loginProc.running) loginProc.running = false
+    if (unlockProc.running) unlockProc.running = false
+    apiKeySecretLookup.clientId = ""
+    apiKeySecretLookup.output = ""
+    unlockProc.output = ""
+    if (listProc.running) listProc.running = false
+    if (getProc.running) getProc.running = false
+    if (lockProc.running) {
+      lockProc.generation = service.generation
+    } else if (startCliLock) {
+      lockProc.generation = service.generation
       lockProc.command = VaultModel.lockCommand()
       lockProc.environment = VaultModel.sessionEnvironment(service.heldSession)
       lockProc.running = true
     }
-    sessionClear.running = true
+    if (sessionStore.running) {
+      sessionStore.clearAfterExit = true
+      sessionStore.running = false
+    } else {
+      sessionClear.running = true
+    }
+    copyProc.queuedPayload = ""
     service.requestClipboardClear()
-    service.generation++
     service.heldSession = ""
     service.items = []
     service.itemsLoaded = false
@@ -334,18 +390,21 @@ Item {
     service.busy = false
     service.authPhase = ""
     service.clearAuthEnvironment()
+    service.clearSessionEnvironments()
     service.lockedOut("locked")
-    service.fetchGlobalStatus()
+    if (!waitForCliLock) service.fetchGlobalStatus()
   }
 
   // A session that turned out to be dead. Same teardown as lock(), minus the
   // `bw lock` call — there is nothing live to lock.
   function sessionDied() {
     service.generation++
+    sessionClear.running = true
     service.heldSession = ""
     service.items = []
     service.itemsLoaded = false
     cacheTimer.stop()
+    service.clearSessionEnvironments()
     service.lockedOut("expired")
     service.fetchGlobalStatus()
   }
@@ -356,6 +415,17 @@ Item {
 
   function copyValue(text) {
     if (!text) return
+    if (copyProc.running) {
+      // Keep at most the newest requested value. It will start only after the
+      // current clipboard source has exited, so payload and digest cannot refer
+      // to different copies.
+      copyProc.queuedPayload = text
+      return
+    }
+    service.startCopy(text)
+  }
+
+  function startCopy(text) {
     copyProc.stdinEnabled = true
     copyProc.payload = text
     copyProc.running = true
@@ -395,18 +465,25 @@ Item {
 
   Process {
     id: sessionLookup
+    property string output: ""
+    property int generation: 0
     command: VaultModel.sessionLookupCommand()
-    stdout: StdioCollector {
-      id: sessionLookupOut
-      waitForEnd: true
+    stdout: SplitParser {
+      onRead: function(line) { sessionLookup.output += String(line || "") }
     }
-    onExited: service.onSessionLookup(sessionLookupOut.text)
+    onExited: {
+      var value = sessionLookup.output
+      var requestGeneration = sessionLookup.generation
+      sessionLookup.output = ""
+      if (requestGeneration === service.generation) service.onSessionLookup(value)
+    }
   }
 
   Process {
     id: sessionStore
     // Snapshotted by the caller before running; see onUnlockSuccess.
     property string payload: ""
+    property bool clearAfterExit: false
     command: VaultModel.sessionStoreCommand()
     stdinEnabled: true
     onStarted: {
@@ -416,6 +493,14 @@ Item {
       // Quickshell's Process never closes the write channel on its own, so
       // without this the store would block forever and never persist.
       stdinEnabled = false
+    }
+    onExited: {
+      payload = ""
+      stdinEnabled = false
+      if (clearAfterExit) {
+        clearAfterExit = false
+        sessionClear.running = true
+      }
     }
   }
 
@@ -439,13 +524,17 @@ Item {
 
   Process {
     id: apiKeyIdLookup
+    property int generation: 0
     command: VaultModel.apiKeyIdLookupCommand()
     stdout: StdioCollector {
       id: apiKeyIdLookupOut
       waitForEnd: true
     }
     onExited: {
+      if (apiKeyIdLookup.generation !== service.generation) return
       apiKeySecretLookup.clientId = String(apiKeyIdLookupOut.text || "").trim()
+      apiKeySecretLookup.output = ""
+      apiKeySecretLookup.generation = apiKeyIdLookup.generation
       apiKeySecretLookup.running = true
     }
   }
@@ -453,39 +542,20 @@ Item {
   Process {
     id: apiKeySecretLookup
     property string clientId: ""
+    property string output: ""
+    property int generation: 0
     command: VaultModel.apiKeySecretLookupCommand()
-    stdout: StdioCollector {
-      id: apiKeySecretLookupOut
-      waitForEnd: true
+    stdout: SplitParser {
+      onRead: function(line) { apiKeySecretLookup.output += String(line || "") }
     }
     onExited: {
       var id = apiKeySecretLookup.clientId
+      var secret = apiKeySecretLookup.output
+      var requestGeneration = apiKeySecretLookup.generation
       apiKeySecretLookup.clientId = ""
-      service.finishStoredUnlock(id, String(apiKeySecretLookupOut.text || "").trim())
-    }
-  }
-
-  Process {
-    id: apiKeyIdStore
-    property string payload: ""
-    command: VaultModel.apiKeyIdStoreCommand()
-    stdinEnabled: true
-    onStarted: {
-      write(payload + "\n")
-      payload = ""
-      stdinEnabled = false
-    }
-  }
-
-  Process {
-    id: apiKeySecretStore
-    property string payload: ""
-    command: VaultModel.apiKeySecretStoreCommand()
-    stdinEnabled: true
-    onStarted: {
-      write(payload + "\n")
-      payload = ""
-      stdinEnabled = false
+      apiKeySecretLookup.output = ""
+      if (requestGeneration !== service.generation) return
+      service.finishStoredUnlock(id, String(secret || "").trim())
     }
   }
 
@@ -493,28 +563,31 @@ Item {
 
   Process {
     id: statusProc
+    property int generation: 0
     environment: VaultModel.nonInteractiveEnvironment()
     stdout: StdioCollector {
       id: statusOut
       waitForEnd: true
     }
-    stderr: StdioCollector {
-      waitForEnd: true
+    onExited: {
+      if (statusProc.generation === service.generation) service.onStatusOutput(statusOut.text)
     }
-    onExited: service.onStatusOutput(statusOut.text)
   }
 
   Process {
     id: loginProc
-    stdout: StdioCollector {
-      waitForEnd: true
-    }
+    property int generation: 0
     stderr: StdioCollector {
       id: loginErr
       waitForEnd: true
     }
     onExited: function(exitCode) {
       var err = String(loginErr.text || "").trim()
+      var requestGeneration = loginProc.generation
+      if (requestGeneration !== service.generation) {
+        loginProc.environment = ({})
+        return
+      }
       if (exitCode === 0) {
         service.error = ""
         // The API-key login leaves the vault locked; the unlock that follows
@@ -524,36 +597,32 @@ Item {
         service.runUnlock()
         return
       }
-      service.error = err || "Login failed"
-      service.busy = false
-      service.authPhase = ""
-      service.clearAuthEnvironment()
+      service.failAuthentication(err || "Login failed")
     }
   }
 
   Process {
     id: unlockProc
+    property string output: ""
+    property int generation: 0
     environment: VaultModel.nonInteractiveEnvironment()
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: service.onUnlockSuccess(text)
+    stdout: SplitParser {
+      onRead: function(line) { unlockProc.output += String(line || "") }
     }
     stderr: StdioCollector {
+      id: unlockErr
       waitForEnd: true
-      onStreamFinished: if (text) {
-        service.error = String(text).trim() || "Unlock failed"
-        service.busy = false
-        service.authPhase = ""
-        service.clearAuthEnvironment()
-      }
     }
     onExited: function(exitCode) {
-      if (exitCode !== 0 && service.busy && service.error === "") {
-        service.error = "Unlock failed"
-        service.busy = false
-        service.authPhase = ""
-        service.clearAuthEnvironment()
+      var session = unlockProc.output
+      var requestGeneration = unlockProc.generation
+      unlockProc.output = ""
+      if (requestGeneration !== service.generation) {
+        unlockProc.environment = VaultModel.nonInteractiveEnvironment()
+        return
       }
+      if (exitCode === 0) service.onUnlockSuccess(session)
+      else service.failAuthentication(String(unlockErr.text || "").trim() || "Unlock failed")
     }
   }
 
@@ -575,54 +644,74 @@ Item {
     // Decided here rather than on stream-finish because only the exit code can
     // tell a dead session from an empty vault.
     onExited: function(exitCode) {
+      var raw = listOut.text
+      var err = String(listErr.text || "").trim()
+      var speculative = listProc.speculative
+      var requestGeneration = listProc.generation
+      listProc.environment = VaultModel.nonInteractiveEnvironment()
       // Started before a lock: whatever it found belongs to a session that no
       // longer exists.
-      if (listProc.generation !== service.generation) return
+      if (requestGeneration !== service.generation) return
       if (exitCode !== 0) {
-        if (listProc.speculative) {
-          service.heldSession = ""
-          service.fetchGlobalStatus()
+        if (speculative) {
+          service.sessionDied()
           return
         }
-        service.error = String(listErr.text || "").trim() || "Could not list items"
+        service.error = err || "Could not list items"
         service.busy = false
         return
       }
-      service.onListOutput(listOut.text)
+      service.onListOutput(raw)
     }
   }
 
   Process {
     id: getProc
     property string token: ""
+    property string output: ""
+    property string errorOutput: ""
     property int generation: 0
     environment: VaultModel.nonInteractiveEnvironment()
-    stdout: StdioCollector {
-      id: getOut
-      waitForEnd: true
+    stdout: SplitParser {
+      onRead: function(line) { getProc.output += String(line || "") }
     }
-    stderr: StdioCollector {
-      id: getErr
-      waitForEnd: true
+    stderr: SplitParser {
+      onRead: function(line) { getProc.errorOutput += String(line || "") + "\n" }
     }
     onExited: function(exitCode) {
-      if (getProc.generation !== service.generation) return
+      var token = getProc.token
+      var raw = getProc.output
+      var err = String(getProc.errorOutput || "").trim()
+      var requestGeneration = getProc.generation
+      getProc.token = ""
+      getProc.output = ""
+      getProc.errorOutput = ""
+      getProc.environment = VaultModel.nonInteractiveEnvironment()
+      if (requestGeneration !== service.generation) return
       if (exitCode !== 0) {
-        service.itemFetchFailed(getProc.token, String(getErr.text || "").trim() || "Could not read item")
+        service.itemFetchFailed(token, err || "Could not read item")
         return
       }
-      var item = VaultModel.parseItem(getOut.text)
+      var item = VaultModel.parseItem(raw)
       if (!item) {
-        service.itemFetchFailed(getProc.token, "Could not read item")
+        service.itemFetchFailed(token, "Could not read item")
         return
       }
-      service.itemFetched(getProc.token, item)
+      var password = String(item.password || "")
+      item.password = ""
+      service.itemFetched(token, item, password)
     }
   }
 
   Process {
     id: lockProc
+    property int generation: 0
     environment: VaultModel.nonInteractiveEnvironment()
+    onExited: {
+      var requestGeneration = lockProc.generation
+      lockProc.environment = VaultModel.nonInteractiveEnvironment()
+      if (requestGeneration === service.generation) service.fetchGlobalStatus()
+    }
   }
 
   // -- clipboard processes ---------------------------------------------------
@@ -630,7 +719,8 @@ Item {
   Process {
     id: copyProc
     property string payload: ""
-    command: ["wl-copy"]
+    property string queuedPayload: ""
+    command: ["wl-copy", "--sensitive"]
     stdinEnabled: true
     onStarted: {
       write(payload)
@@ -638,6 +728,13 @@ Item {
       // Close stdin so wl-copy sees EOF, copies, and exits. Otherwise the
       // process leaks and keeps the clipboard source pipe open.
       stdinEnabled = false
+    }
+    onExited: {
+      payload = ""
+      if (!queuedPayload) return
+      var next = queuedPayload
+      queuedPayload = ""
+      Qt.callLater(function() { service.startCopy(next) })
     }
   }
 

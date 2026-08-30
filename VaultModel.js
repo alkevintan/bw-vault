@@ -13,8 +13,9 @@
 //
 // This file is pure JS. The QML side owns all Process lifecycle; the model
 // only builds commands and parses output. Secrets (master password, session
-// token, item passwords) only ever live in QML properties / process
-// environment, never in this module.
+// token, item passwords) are not retained by this module. List/detail reads go
+// through bin/bw-vault-query, which reduces raw Bitwarden JSON before it enters
+// the long-lived QML process.
 
 .pragma library
 
@@ -148,12 +149,12 @@ function unlockCommand() {
   return buildCommand(["unlock", "--passwordenv", PASSWORD_ENV, "--raw"])
 }
 
-function listCommand() {
-  return buildCommand(["list", "items"])
+function listCommand(helperPath) {
+  return [String(helperPath || ""), "list"]
 }
 
-function getCommand(id) {
-  return buildCommand(["get", "item", id])
+function getCommand(helperPath, id) {
+  return [String(helperPath || ""), "get", String(id || "")]
 }
 
 function lockCommand() {
@@ -185,7 +186,8 @@ function itemTypeName(type) {
   return ITEM_TYPES[String(type)] || "item"
 }
 
-// Strip secrets from list output: the list view never carries passwords.
+// Parse the already-minimized helper output. The list view never carries
+// passwords or notes.
 function parseList(raw) {
   var arr = null
   try { arr = JSON.parse(raw) } catch (e) { return [] }
@@ -194,16 +196,15 @@ function parseList(raw) {
   for (var i = 0; i < arr.length; i++) {
     var it = arr[i]
     if (!it || typeof it !== "object") continue
-    var login = it.login || {}
     var uris = []
-    if (Array.isArray(login.uris)) {
-      for (var j = 0; j < login.uris.length; j++) {
-        var u = login.uris[j]
+    if (Array.isArray(it.uris)) {
+      for (var j = 0; j < it.uris.length; j++) {
+        var u = it.uris[j]
         if (u && u.uri) uris.push(u.uri)
       }
     }
     var name = String(it.name || "")
-    var username = String(login.username || "")
+    var username = String(it.username || "")
     out.push({
       id: String(it.id || ""),
       name: name,
@@ -212,7 +213,6 @@ function parseList(raw) {
       // item on every keystroke.
       searchKey: (name + " " + username).toLowerCase(),
       type: itemTypeName(it.type),
-      notes: String(it.notes || ""),
       uris: uris
     })
   }
@@ -224,19 +224,18 @@ function parseItem(raw) {
   var it = null
   try { it = JSON.parse(raw) } catch (e) { return null }
   if (!it || typeof it !== "object") return null
-  var login = it.login || {}
   var uris = []
-  if (Array.isArray(login.uris)) {
-    for (var j = 0; j < login.uris.length; j++) {
-      var u = login.uris[j]
+  if (Array.isArray(it.uris)) {
+    for (var j = 0; j < it.uris.length; j++) {
+      var u = it.uris[j]
       if (u && u.uri) uris.push(u.uri)
     }
   }
   return {
     id: String(it.id || ""),
     name: String(it.name || ""),
-    username: String(login.username || ""),
-    password: String(login.password || ""),
+    username: String(it.username || ""),
+    password: String(it.password || ""),
     type: itemTypeName(it.type),
     notes: String(it.notes || ""),
     uris: uris
