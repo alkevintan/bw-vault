@@ -63,7 +63,7 @@ Item {
 
   // Whether a personal API key is already in the keyring. Only the flag is
   // kept — never the key itself. Drives whether the panel can offer an unlock
-  // form at all, or has to send you to `bw-vault-setup` first.
+  // form at all, or has to send you to the setup window first.
   property bool apiKeyStored: false
 
   // The master password, in transit between the keyring lookup that unlock
@@ -198,7 +198,7 @@ Item {
 
   // Unlock using the API key already in the keyring, so the panel only ever
   // has to ask for the master password. On a machine with no key stored this
-  // is refused rather than half-attempted: `bw-vault-setup` is the way in.
+  // is refused rather than half-attempted: the setup window is the way in.
   function unlockWithStored(masterPassword) {
     if (service.busy && service.authPhase !== "") return
     if (service.status !== "unauthenticated") {
@@ -206,7 +206,7 @@ Item {
       return
     }
     if (!service.apiKeyStored) {
-      service.error = "No API key stored — run bw-vault-setup"
+      service.error = "No API key stored — set one up first"
       return
     }
     service.error = ""
@@ -226,7 +226,7 @@ Item {
     service.unlock(clientId, clientSecret, master)
   }
 
-  // Called by the panel's fallback form and by `bw-vault-setup`'s in-shell
+  // Called by the panel's fallback form and by the setup window's
   // counterpart. Non-fatal: a key that cannot be persisted still unlocks this
   // session, it just has to be entered again next time.
   function storeApiKey(clientId, clientSecret) {
@@ -237,6 +237,25 @@ Item {
     apiKeySecretStore.stdinEnabled = true
     apiKeySecretStore.running = true
     service.apiKeyStored = true
+  }
+
+  // Remove the stored API key from the keyring.
+  function clearApiKey() {
+    apiKeyClearId.running = true
+    apiKeyClearSecret.running = true
+    service.apiKeyStored = false
+  }
+
+  // First-run API key entry. A window of its own, not a dropdown screen — see
+  // SetupWindow.qml for why.
+  function openSetup() {
+    setupWindow.visible = true
+  }
+
+  SetupWindow {
+    id: setupWindow
+    svc: service
+    visible: false
   }
 
   function runUnlock() {
@@ -489,6 +508,16 @@ Item {
     }
   }
 
+  Process {
+    id: apiKeyClearId
+    command: VaultModel.apiKeyClearCommands()[0]
+  }
+
+  Process {
+    id: apiKeyClearSecret
+    command: VaultModel.apiKeyClearCommands()[1]
+  }
+
   // -- bw --------------------------------------------------------------------
 
   Process {
@@ -688,6 +717,8 @@ Item {
 
     function refresh(): void { service.refresh(true) }
     function lock(): void { service.lock() }
+    function setup(): void { service.openSetup() }
+    function clearKey(): void { service.clearApiKey() }
     function forget(): void { service.forgetCache() }
   }
 }

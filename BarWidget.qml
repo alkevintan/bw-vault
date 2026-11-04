@@ -15,10 +15,9 @@ import "VaultModel.js" as VaultModel
 // One thing did not survive that move: entering a personal API key for the
 // first time. You copy client_id and client_secret out of a browser one at a
 // time, and KeyboardPanel dismisses on any click outside it, so the trip back
-// for the second value would close the form and lose the first. The overlay
-// solved that with a floating, non-grabbing card; the dropdown solves it by not
-// doing it at all — `bw-vault-setup` stores the key from a terminal, once per
-// machine. From then on this panel only ever asks for the master password.
+// for the second value would close the form and lose the first. The dropdown
+// hands that off to SetupWindow, a separate window that stays open. From then on this panel
+// only ever asks for the master password.
 //
 // Session, item metadata and every `bw` child live in Service.qml, which the
 // shell mounts once. This file holds screens, selection and focus.
@@ -179,7 +178,7 @@ Panel {
   function submitUnlock() {
     if (root.unlocking) return
     if (!root.apiKeyStored && root.status === "unauthenticated") {
-      root.say("Run bw-vault-setup in a terminal first", true)
+      root.say("Set up your API key first", true)
       return
     }
     if (!String(root.masterPassword)) {
@@ -546,9 +545,9 @@ Panel {
           width: parent.width
           spacing: Style.space(10)
 
-          // Nothing in the keyring: there is no useful form to show, because
-          // the API key cannot be pasted in here without losing it to the
-          // first click outside the panel.
+          // Nothing in the keyring. The key cannot be entered in this panel —
+          // it would be lost to the first click outside it — so the button
+          // opens a separate window that stays put.
           Column {
             visible: !root.apiKeyStored && root.status === "unauthenticated"
             width: parent.width
@@ -556,20 +555,21 @@ Panel {
 
             Text {
               width: parent.width
-              text: "This machine has no Bitwarden API key stored yet. Run this in a terminal, once:"
+              text: "This machine has no Bitwarden API key stored yet."
               color: root.dim
               font.family: Style.font.family
               font.pixelSize: Style.font.bodySmall
               wrapMode: Text.WordWrap
             }
 
-            Text {
-              width: parent.width
-              text: "bw-vault-setup"
-              color: Color.accent
-              font.family: Style.font.family
-              font.pixelSize: Style.font.body
-              font.bold: true
+            Button {
+              text: "Set up API key…"
+              bordered: true
+              foreground: root.foreground
+              onClicked: {
+                if (root.svc) root.svc.openSetup()
+                root.close()
+              }
             }
           }
 

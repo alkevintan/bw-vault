@@ -45,7 +45,7 @@ esac
 # tree instead.
 ln -s "$shell_dir/Commons" "$work/Commons"
 ln -s "$shell_dir/Ui" "$work/Ui"
-for f in BarWidget.qml Service.qml VaultModel.js; do ln -s "$plugin/$f" "$work/$f"; done
+for f in BarWidget.qml Service.qml SetupWindow.qml VaultModel.js; do ln -s "$plugin/$f" "$work/$f"; done
 cp "$here/demo-shell.qml" "$work/shell.qml"
 
 echo "Config:        $work"
