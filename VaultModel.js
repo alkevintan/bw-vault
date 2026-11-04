@@ -111,6 +111,12 @@ function apiKeySecretStoreCommand() {
   return ["secret-tool", "store", "--label=bw-vault client secret", "service", KEYRING_SERVICE, "account", API_KEY_SECRET_ACCOUNT]
 }
 
+function apiKeyClearCommands() {
+  return [API_KEY_ID_ACCOUNT, API_KEY_SECRET_ACCOUNT].map(function(a) {
+    return ["secret-tool", "clear", "service", KEYRING_SERVICE, "account", a]
+  })
+}
+
 // -- Commands ----------------------------------------------------------------
 
 // statusCommand() — where bw stands globally. Only ever called without a

@@ -23,7 +23,7 @@ What that caching does and does not cover is spelled out in [Security notes](#se
 - **Bar dropdown** — lock state at a glance; click for a search box over your vault. Enter copies the password. `ctrl+u` copies the username with no `bw` call at all, because the username is already in the cached list.
 - **Item detail** — `ctrl+enter` opens the selected item: username, password (hidden until you press `p`), URI, notes. The only screen that ever draws a secret.
 - **Master-password unlock** — in the dropdown. The password travels through the child process environment (`bw --passwordenv`), never argv, and its environment is cleared when the child exits.
-- **API key authentication** — authenticates with your [personal API key](https://bitwarden.com/help/personal-api-key/) (`bw login --apikey`), which needs no interactive 2FA and skips new-device verification. Stored once per machine by `bw-vault-setup`; see [Setup](#setup).
+- **API key authentication** — authenticates with your [personal API key](https://bitwarden.com/help/personal-api-key/) (`bw login --apikey`), which needs no interactive 2FA and skips new-device verification. Entered once per machine in the setup window; see [Setup](#setup).
 - **Session persistence** — the session key is mirrored to the OS keyring (Secret Service via `secret-tool`), so the master password is asked for once per machine and survives a shell restart.
 - **Idle cache expiry** — the cached list is forgotten after `cacheTtlMinutes` of no vault activity (15 by default). The session is untouched, so recovering costs one `bw list` and no master password.
 - **Clipboard auto-wipe** — a copied value is wiped about 20 seconds later, but only if the clipboard still holds it.
@@ -45,17 +45,9 @@ omarchy plugin add https://github.com/alkevintan/bw-vault.git --enable
 
 ## Setup
 
-Once per machine, store your Bitwarden personal API key:
+Once per machine, store your Bitwarden personal API key. The dropdown shows a **Set up API key…** button until one is stored (or run `omarchy-shell com.aktivesolutions.bw-vault setup`). It opens a small window with `client_id` and `client_secret` fields; press **ctrl+o** there to open the web vault in your browser on the Keys page (then View API Key). The window stays open while you copy the two values across, and the secret is piped to `secret-tool` on stdin, so it never appears in the process list.
 
-```sh
-~/.config/omarchy/plugins/com.aktivesolutions.bw-vault/bin/bw-vault-setup
-```
-
-It prompts for `client_id` and `client_secret` (get them from the web vault: Account Settings → Security → Keys → View API Key) and writes them to your OS keyring. The secret is read with terminal echo off and piped to `secret-tool` on stdin, so it never appears on screen, in scrollback, or in the process list.
-
-`--show` reports whether a key is stored without printing the secret; `--clear` removes it.
-
-**Why a terminal command and not a screen in the plugin.** You copy the two values out of a browser one at a time, and an Omarchy bar dropdown dismisses on any click outside it — the trip back to the browser for the second value would close the form and lose the first. Version 1.x solved this with a floating overlay card that deliberately did not grab the keyboard. Dropping the overlay meant dropping that trick, so the key entry moved somewhere that has never had the problem.
+To remove the stored key: `omarchy-shell com.aktivesolutions.bw-vault clearKey`.
 
 If `bw` is already logged in by some other means, you can skip this entirely: the dropdown will ask for your master password and unlock against the existing login.
 
@@ -129,7 +121,7 @@ Set these through Omarchy's bar widget settings, or directly on the widget's `sh
 Version 2.0 removes the fullscreen overlay. Two things change for you:
 
 1. **Your keybinding.** `omarchy-shell shell toggle com.aktivesolutions.bw-vault` no longer resolves to anything. Use `omarchy-shell bw-vault-bar toggle`.
-2. **First-run API key entry** moved from the overlay's floating card to `bw-vault-setup`. A key already in your keyring is picked up as-is; nothing to redo.
+2. **First-run API key entry** moved from the overlay's floating card to a separate setup window. A key already in your keyring is picked up as-is; nothing to redo.
 
 Item metadata is now cached between opens where 1.x dropped it on every close — see [Security notes](#security-notes) if that matters to you.
 
@@ -147,7 +139,7 @@ All three are usually already present on Omarchy. If one is missing, add it with
 - `bw: command not found` → install the [Bitwarden CLI](https://bitwarden.com/help/bitwarden-cli/).
 - `secret-tool: command not found` → install `libsecret`.
 - The padlock isn't in the bar → `omarchy plugin list`, and see the note under [Install](#install).
-- The dropdown says "Not set up" → run `bw-vault-setup`.
+- The dropdown says "Not set up" → click **Set up API key…**.
 - Everything feels slow → that's `bw`. Check `cacheTtlMinutes` hasn't been set to something tiny; each expiry costs one four-second `bw list`.
 
 ## Remove
@@ -155,7 +147,8 @@ All three are usually already present on Omarchy. If one is missing, add it with
 ```sh
 omarchy plugin disable com.aktivesolutions.bw-vault
 omarchy plugin remove com.aktivesolutions.bw-vault
-~/.config/omarchy/plugins/com.aktivesolutions.bw-vault/bin/bw-vault-setup --clear   # before removing, if you want the keyring entries gone
+# before removing, if you want the keyring entries gone:
+omarchy-shell com.aktivesolutions.bw-vault clearKey
 ```
 
 ## Security notes
@@ -181,7 +174,7 @@ manifest.json        # plugin manifest (id: com.aktivesolutions.bw-vault)
 Service.qml          # session, item metadata, every bw child. Mounted once by the shell
 BarWidget.qml        # bar icon + dropdown: unlock, search, copy, detail
 VaultModel.js        # bw CLI command building + JSON parsing (pure JS)
-bin/bw-vault-setup   # one-time API key storage, from a terminal
+SetupWindow.qml      # one-time API key entry window
 test/demo            # run the dropdown against a fixture vault, in its own shell
 test/demo-vault.json # the fixture vault
 test/fixtures/       # stub `bw` and `secret-tool`
