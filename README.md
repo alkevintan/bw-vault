@@ -26,6 +26,7 @@ What that caching does and does not cover is spelled out in [Security notes](#se
 - **API key authentication** — authenticates with your [personal API key](https://bitwarden.com/help/personal-api-key/) (`bw login --apikey`), which needs no interactive 2FA and skips new-device verification. Entered once per machine in the setup window; see [Setup](#setup).
 - **Session persistence** — the session key is mirrored to the OS keyring (Secret Service via `secret-tool`), so the master password is asked for once per machine and survives a shell restart.
 - **Idle cache expiry** — the cached list is forgotten after `cacheTtlMinutes` of no vault activity (15 by default). The session is untouched, so recovering costs one `bw list` and no master password.
+- **Auto-lock** — the vault locks itself after `autoLockMinutes` of no vault activity (30 by default, `0` disables). Locking drops the session and the keyring copy, so the master password is needed again.
 - **Clipboard auto-wipe** — a copied value is wiped about 20 seconds later, but only if the clipboard still holds it.
 - **Native Omarchy theming** — built on `Panel`, `KeyboardPanel`, `TextField` and `Color.*` tokens, so it matches your theme.
 
@@ -87,6 +88,7 @@ omarchy-shell bw-vault-bar search github
 | `ctrl+u` | Copy the username (instant; already in the cached list) |
 | `ctrl+enter` | Open item detail |
 | `ctrl+l` | Lock the vault |
+| `ctrl+t` | Cycle the auto-lock timeout: off → 5 → 15 → 30 → 60 → 120 min → off. Lasts until the shell restarts; the `autoLockMinutes` setting is the permanent value |
 | `esc` | Close |
 
 Clicking a row copies its password; right-clicking a row opens its detail.
@@ -113,6 +115,7 @@ Set these through Omarchy's bar widget settings, or directly on the widget's `sh
 |---|---|---|
 | `maxResults` | `8` | Rows shown in the dropdown |
 | `cacheTtlMinutes` | `15` | Forget the cached item list after this many idle minutes. `0` keeps it until you lock |
+| `autoLockMinutes` | `30` | Lock the vault after this many idle minutes. `0` never auto-locks |
 | `lockOnRightClick` | `true` | Right-clicking the bar icon locks the vault |
 | `showCount` | `false` | Show the item count next to the bar icon |
 

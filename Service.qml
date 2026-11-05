@@ -94,6 +94,34 @@ Item {
     return Math.max(0, Math.min(240, Math.round(raw)))
   }
 
+  // Minutes of idleness before the vault is locked outright (session dropped,
+  // master password needed again). 0 disables. Distinct from cacheTtlMinutes,
+  // which only forgets the item list.
+  // A runtime override set by cycleAutoLock(); -1 means "use the setting".
+  // Not persisted: a shell restart returns to the configured value.
+  property int autoLockOverride: -1
+  readonly property var autoLockPresets: [0, 5, 15, 30, 60, 120]
+
+  readonly property int autoLockMinutes: {
+    if (service.autoLockOverride >= 0) return service.autoLockOverride
+    var raw = Number(service.settings ? service.settings.autoLockMinutes : NaN)
+    if (!isFinite(raw)) return 30
+    return Math.max(0, Math.min(1440, Math.round(raw)))
+  }
+
+  // Step to the next preset above the current value, wrapping to the first.
+  // Returns the new value in minutes (0 = never).
+  function cycleAutoLock() {
+    var cur = service.autoLockMinutes
+    var next = service.autoLockPresets[0]
+    for (var i = 0; i < service.autoLockPresets.length; i++) {
+      if (service.autoLockPresets[i] > cur) { next = service.autoLockPresets[i]; break }
+    }
+    service.autoLockOverride = next
+    service.touch()
+    return next
+  }
+
   Component.onCompleted: {
     apiKeyIdProbe.running = true
     service.refresh()
@@ -115,6 +143,8 @@ Item {
   // Reset the idle clock. Any view that is showing vault contents calls this,
   // so the cache expires on real idleness rather than on wall-clock age.
   function touch() {
+    lockTimer.stop()
+    if (service.autoLockMinutes > 0 && service.heldSession !== "") lockTimer.restart()
     cacheTimer.stop()
     if (service.cacheTtlMinutes > 0 && service.itemsLoaded) cacheTimer.restart()
   }
@@ -348,6 +378,7 @@ Item {
     service.items = []
     service.itemsLoaded = false
     cacheTimer.stop()
+    lockTimer.stop()
     service.status = "locked"
     service.error = ""
     service.busy = false
@@ -365,6 +396,7 @@ Item {
     service.items = []
     service.itemsLoaded = false
     cacheTimer.stop()
+    lockTimer.stop()
     service.lockedOut("expired")
     service.fetchGlobalStatus()
   }
@@ -408,6 +440,15 @@ Item {
     interval: Math.max(1, service.cacheTtlMinutes) * 60000
     repeat: false
     onTriggered: service.forgetCache()
+  }
+
+  // -- idle auto-lock ----------------------------------------------------------
+
+  Timer {
+    id: lockTimer
+    interval: Math.max(1, service.autoLockMinutes) * 60000
+    repeat: false
+    onTriggered: if (service.heldSession !== "") service.lock()
   }
 
   // -- keyring ---------------------------------------------------------------
@@ -710,6 +751,7 @@ Item {
         items: service.items.length,
         itemsLoaded: service.itemsLoaded,
         cacheTtlMinutes: service.cacheTtlMinutes,
+        autoLockMinutes: service.autoLockMinutes,
         generation: service.generation,
         error: service.error
       })
@@ -717,6 +759,7 @@ Item {
 
     function refresh(): void { service.refresh(true) }
     function lock(): void { service.lock() }
+    function cycleAutoLock(): string { return String(service.cycleAutoLock()) }
     function setup(): void { service.openSetup() }
     function clearKey(): void { service.clearApiKey() }
     function forget(): void { service.forgetCache() }

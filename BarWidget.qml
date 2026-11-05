@@ -631,6 +631,12 @@ Panel {
               } else if (event.key === Qt.Key_L) {
                 if (root.svc) root.svc.lock()
                 event.accepted = true
+              } else if (event.key === Qt.Key_T) {
+                if (root.svc) {
+                  var m = root.svc.cycleAutoLock()
+                  root.say(m > 0 ? "Auto-lock after " + m + " min idle" : "Auto-lock off", false)
+                }
+                event.accepted = true
               }
             }
           }
@@ -663,7 +669,7 @@ Panel {
 
           Text {
             width: parent.width
-            text: root.notice !== "" ? root.notice : "enter copy · ctrl+u user · ctrl+enter open"
+            text: root.notice !== "" ? root.notice : "enter copy · ctrl+u user · ctrl+enter open · ctrl+t auto-lock"
             color: root.notice !== "" ? (root.noticeIsError ? Color.urgent : Color.accent) : root.fainter
             font.family: Style.font.family
             font.pixelSize: Style.font.caption

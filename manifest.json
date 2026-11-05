@@ -23,6 +23,7 @@
     "defaults": {
       "maxResults": 8,
       "cacheTtlMinutes": 15,
+      "autoLockMinutes": 30,
       "lockOnRightClick": true,
       "showCount": false
     },
@@ -44,6 +45,15 @@
         "max": 240,
         "step": 1,
         "defaultValue": 15
+      },
+      {
+        "key": "autoLockMinutes",
+        "type": "integer",
+        "label": "Lock the vault after this many idle minutes (0 = never)",
+        "min": 0,
+        "max": 1440,
+        "step": 5,
+        "defaultValue": 30
       },
       {
         "key": "lockOnRightClick",
